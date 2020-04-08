@@ -14,8 +14,8 @@ void scan_i2c() {
   Serial.println("I2C Scanner");
 
   // LdB Set up SCA and SCL lines
-  int SDA = 4;	// Wemos D1 Mini Pro
-  int SCL = 5;  // Wemos D1 Mini Pro
+  //  int SDA = 4;	// Wemos D1 Mini Pro
+  //  int SCL = 5;  // Wemos D1 Mini Pro
   // Wire.begin(SDA, SCL);	// 	Connect the scanner to the connect GPIO pins. 
 
   // LdB not sure what this does except for just scan 5 times?

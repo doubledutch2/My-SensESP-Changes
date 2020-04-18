@@ -1,53 +1,46 @@
 #include "SensMPU9250.h"
+#include <RemoteDebug.h> 
 #include "sensesp.h"
-#include <RemoteDebug.h>
-#include "MPU9250.h"
-#include "quaternionFilters.h"
-#include <SPI.h>
-#include <Wire.h>   
 
-#define AHRS false         // Set to false for basic data read
+
 #define SerialDebug true  // Set to true to get Serial output for debugging
 
-// Pin definitions
-int intPin = 12;  // These can be changed, 2 and 3 are the Arduinos ext int pins
-int myLed  = 13;  // Set up pin 13 led for toggling
-
-#define I2Cclock 400000
-#define I2Cport Wire
-
-#define MPU9250_ADDRESS MPU9250_ADDRESS_AD0   // Use either this line or the next to select which I2C address your device is using
-//#define MPU9250_ADDRESS MPU9250_ADDRESS_AD1
-
 // mpu9250 represents 9 Axis Gyro main code from: https://learn.sparkfun.com/tutorials/mpu-9250-hookup-guide/all
-mpu9250::mpu9250(uint8_t addr, String config_path) :
-       Sensor(config_path), addr{addr} {
-    MPU9250 myIMU(MPU9250_ADDRESS, I2Cport, I2Cclock);
+// The mpu9250 Class is set up to scan the sensor every few milli seconds both AHRS Raw data
+
+mpu9250::mpu9250(uint8_t addr, uint read_delay, String config_path) :
+       Sensor(config_path), 
+       addr{addr},
+       read_delay{read_delay}
+       {
+    MPU9250 myIMU(addr);
+
     className = "MPU9250";
     load_configuration();
-    check_status();
+    if (!check_status()) {
+      Serial.print(F("Error initializing MPU9250"));
+    }
+    else {
+      app.onRepeat(5, [this](){   //  Every 5ms
+        read_values(true);        //  Get AHRS value (Altitude, Heading, Reference System)
+        read_values(false);       //  Get Raw data
+      });        
+    }
 }
 
-void mpu9250::check_status() {
+boolean mpu9250::check_status() {
   Wire.begin();
-  // TWBR = 12;  // 400 kbit/sec I2C speed
-  // Serial.begin(38400);
 
   while(!Serial){};
 
-  // Set up the interrupt pin, its set as active high, push-pull
-  pinMode(intPin, INPUT);
-  digitalWrite(intPin, LOW);
-  pinMode(myLed, OUTPUT);
-  digitalWrite(myLed, HIGH);
-
   // Read the WHO_AM_I register, this is a good test of communication
-  byte c = myIMU.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
+  byte c = myIMU.readByte(addr, WHO_AM_I_MPU9250);
   Serial.print(F("MPU9250 I AM 0x"));
   Serial.print(c, HEX);
   Serial.print(F(" I should be 0x"));
   Serial.println(0x71, HEX);
-
+  // debugI("blabla");
+  
   if (c == 0x71) // WHO_AM_I should always be 0x71
   {
     Serial.println(F("MPU9250 is online..."));
@@ -115,7 +108,7 @@ void mpu9250::check_status() {
 
     // The next call delays for 4 seconds, and then records about 15 seconds of
     // data to calculate bias and scale.
-//    myIMU.magCalMPU9250(myIMU.magBias, myIMU.magScale);
+
     Serial.println("AK8963 mag biases (mG)");
     Serial.println(myIMU.magBias[0]);
     Serial.println(myIMU.magBias[1]);
@@ -125,7 +118,6 @@ void mpu9250::check_status() {
     Serial.println(myIMU.magScale[0]);
     Serial.println(myIMU.magScale[1]);
     Serial.println(myIMU.magScale[2]);
-//    delay(2000); // Add delay to see results before serial spew of data
 
     if(SerialDebug)
     {
@@ -147,15 +139,17 @@ void mpu9250::check_status() {
     // Communication failed, stop here
     Serial.println(F("Communication failed, abort!"));
     Serial.flush();
-    abort();
+    return false;
   }
+  return true;
 }
-/*
-void loop()
+
+void mpu9250::read_values(boolean AHRS)
 {
+
   // If intPin goes high, all data registers have new data
   // On interrupt, check if data ready interrupt
-  if (myIMU.readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01)
+  if (myIMU.readByte(addr, INT_STATUS) & 0x01)
   {
     myIMU.readAccelData(myIMU.accelCount);  // Read the x/y/z adc values
 
@@ -186,7 +180,9 @@ void loop()
     myIMU.mz = (float)myIMU.magCount[2] * myIMU.mRes
                * myIMU.factoryMagCalibration[2] - myIMU.magBias[2];
   } // if (readByte(MPU9250_ADDRESS, INT_STATUS) & 0x01)
-
+  else {
+    // Serial.println("Interupt not set");
+  }
   // Must be called before updating quaternions!
   myIMU.updateTime();
 
@@ -204,9 +200,11 @@ void loop()
 
   if (!AHRS)
   {
+ 
     myIMU.delt_t = millis() - myIMU.count;
-    if (myIMU.delt_t > 500)
+    if (myIMU.delt_t > read_delay)
     {
+      SensorRead = true;
       if(SerialDebug)
       {
         // Print acceleration values in milligs!
@@ -225,7 +223,7 @@ void loop()
         Serial.print("Z-gyro rate: "); Serial.print(myIMU.gz, 3);
         Serial.println(" degrees/sec");
 
-        // Print mag values in degree/sec
+        // Print mag values in milligauss
         Serial.print("X-mag field: "); Serial.print(myIMU.mx);
         Serial.print(" mG ");
         Serial.print("Y-mag field: "); Serial.print(myIMU.my);
@@ -243,19 +241,20 @@ void loop()
 
 
       myIMU.count = millis();
-      digitalWrite(myLed, !digitalRead(myLed));  // toggle led
     } // if (myIMU.delt_t > 500)
   } // if (!AHRS)
   else
   {
-    // Serial print and/or display at 0.5 s rate independent of data rates
+    SensorRead = true;
     myIMU.delt_t = millis() - myIMU.count;
 
     // update LCD once per half-second independent of read rate
-    if (myIMU.delt_t > 500)
+    if (myIMU.delt_t > read_delay)
     {
+
       if(SerialDebug)
       {
+        /*
         Serial.print("ax = ");  Serial.print((int)1000 * myIMU.ax);
         Serial.print(" ay = "); Serial.print((int)1000 * myIMU.ay);
         Serial.print(" az = "); Serial.print((int)1000 * myIMU.az);
@@ -275,19 +274,22 @@ void loop()
         Serial.print(" qx = "); Serial.print(*(getQ() + 1));
         Serial.print(" qy = "); Serial.print(*(getQ() + 2));
         Serial.print(" qz = "); Serial.println(*(getQ() + 3));
+        */
       }
 
 // Define output variables from updated quaternion---these are Tait-Bryan
 // angles, commonly used in aircraft orientation. In this coordinate system,
-// the positive z-axis is down toward Earth. Yaw is the angle between Sensor
-// x-axis and Earth magnetic North (or true North if corrected for local
-// declination, looking down on the sensor positive yaw is counterclockwise.
-// Pitch is angle between sensor x-axis and Earth ground plane, toward the
-// Earth is positive, up toward the sky is negative. Roll is angle between
-// sensor y-axis and Earth ground plane, y-axis up is positive roll. These
-// arise from the definition of the homogeneous rotation matrix constructed
-// from quaternions. Tait-Bryan angles as well as Euler angles are
-// non-commutative; that is, the get the correct orientation the rotations
+// the positive 
+// - z-axis is down toward Earth. 
+// - Yaw is the angle between Sensors x-axis and Earth magnetic North (or true North if corrected for local
+//   declination, looking down on the sensor positive yaw is counterclockwise.
+// - Pitch is angle between sensor x-axis and Earth ground plane, toward the
+//   Earth is positive, up toward the sky is negative. 
+// - Roll is angle between sensor y-axis and Earth ground plane, y-axis up is positive roll. These
+//   arise from the definition of the homogeneous rotation matrix constructed
+//   from quaternions. 
+// Tait-Bryan angles as well as Euler angles are non-commutative; //
+// that is, the get the correct orientation the rotations
 // must be applied in the correct order which for this configuration is yaw,
 // pitch, and then roll.
 // For more see
@@ -309,68 +311,22 @@ void loop()
       // Declination of SparkFun Electronics (40°05'26.6"N 105°11'05.9"W) is
       //    8° 30' E  ± 0° 21' (or 8.5°) on 2016-07-19
       // - http://www.ngdc.noaa.gov/geomag-web/#declination
-      myIMU.yaw  -= 8.5;
+      // myIMU.yaw  -= 8.5;
       myIMU.roll *= RAD_TO_DEG;
 
       if(SerialDebug)
       {
-        Serial.print("Yaw, Pitch, Roll: ");
-        Serial.print(myIMU.yaw, 2);
-        Serial.print(", ");
-        Serial.print(myIMU.pitch, 2);
-        Serial.print(", ");
+        Serial.print("Yaw (Angle between X-Axis and Magnetic North): ");
+        Serial.println(myIMU.yaw, 2);
+
+        Serial.print("Pitch (Angle between X-Axis and Earth Ground Plane): ");
+        Serial.println(myIMU.pitch, 2);
+
+        Serial.print("Roll (Angle beween Y-Axis and Earth Ground Plane): ");
         Serial.println(myIMU.roll, 2);
 
-        Serial.print("rate = ");
-        Serial.print((float)myIMU.sumCount / myIMU.sum, 2);
-        Serial.println(" Hz");
       }
 
-#ifdef LCD
-      display.clearDisplay();
-
-      display.setCursor(0, 0); display.print(" x   y   z  ");
-
-      display.setCursor(0,  8); display.print((int)(1000 * myIMU.ax));
-      display.setCursor(24, 8); display.print((int)(1000 * myIMU.ay));
-      display.setCursor(48, 8); display.print((int)(1000 * myIMU.az));
-      display.setCursor(72, 8); display.print("mg");
-
-      display.setCursor(0,  16); display.print((int)(myIMU.gx));
-      display.setCursor(24, 16); display.print((int)(myIMU.gy));
-      display.setCursor(48, 16); display.print((int)(myIMU.gz));
-      display.setCursor(66, 16); display.print("o/s");
-
-      display.setCursor(0,  24); display.print((int)(myIMU.mx));
-      display.setCursor(24, 24); display.print((int)(myIMU.my));
-      display.setCursor(48, 24); display.print((int)(myIMU.mz));
-      display.setCursor(72, 24); display.print("mG");
-
-      display.setCursor(0,  32); display.print((int)(myIMU.yaw));
-      display.setCursor(24, 32); display.print((int)(myIMU.pitch));
-      display.setCursor(48, 32); display.print((int)(myIMU.roll));
-      display.setCursor(66, 32); display.print("ypr");
-
-    // With these settings the filter is updating at a ~145 Hz rate using the
-    // Madgwick scheme and >200 Hz using the Mahony scheme even though the
-    // display refreshes at only 2 Hz. The filter update rate is determined
-    // mostly by the mathematical steps in the respective algorithms, the
-    // processor speed (8 MHz for the 3.3V Pro Mini), and the magnetometer ODR:
-    // an ODR of 10 Hz for the magnetometer produce the above rates, maximum
-    // magnetometer ODR of 100 Hz produces filter update rates of 36 - 145 and
-    // ~38 Hz for the Madgwick and Mahony schemes, respectively. This is
-    // presumably because the magnetometer read takes longer than the gyro or
-    // accelerometer reads. This filter update rate should be fast enough to
-    // maintain accurate platform orientation for stabilization control of a
-    // fast-moving robot or quadcopter. Compare to the update rate of 200 Hz
-    // produced by the on-board Digital Motion Processor of Invensense's MPU6050
-    // 6 DoF and MPU9150 9DoF sensors. The 3.3 V 8 MHz Pro Mini is doing pretty
-    // well!
-      display.setCursor(0, 40); display.print("rt: ");
-      display.print((float) myIMU.sumCount / myIMU.sum, 2);
-      display.print(" Hz");
-      display.display();
-#endif // LCD
 
       myIMU.count = millis();
       myIMU.sumCount = 0;
@@ -378,4 +334,125 @@ void loop()
     } // if (myIMU.delt_t > 500)
   } // if (AHRS)
 }
+
+/*
+
+mpu9250 Class is used to get the Values to Signal K. You call it with one of the
+val_type (e.g. yaw) and it then reads the myIMU instance which has all the values in it
+and sends that back to SignalK
+
 */
+mpu9250value::mpu9250value( mpu9250* pMPU9250, 
+                            MPU9250ValType val_type, 
+                            uint read_delay, 
+                            String config_path):
+    NumericSensor(config_path), pMPU9250{pMPU9250}, val_type{val_type}, read_delay{read_delay} {
+    className = "mpu9250value";
+    load_configuration();
+}
+
+void mpu9250value::enable() {
+  
+  app.onRepeat(read_delay, [this](){
+      switch (val_type) {
+        case (yaw):           output = round2Decs(pMPU9250->myIMU.yaw);         break;
+        case (pitch):         output = round2Decs(pMPU9250->myIMU.pitch);       break;
+        case (roll):          output = round2Decs(pMPU9250->myIMU.roll);        break;
+        case (xAcc):          output = round2Decs(pMPU9250->myIMU.ax);          break;
+        case (yAcc):          output = round2Decs(pMPU9250->myIMU.ay);          break;    
+        case (zAcc):          output = round2Decs(pMPU9250->myIMU.az);          break;
+        case (xGyro):         output = round2Decs(pMPU9250->myIMU.gx);          break;
+        case (yGyro):         output = round2Decs(pMPU9250->myIMU.gy);          break;
+        case (zGyro):         output = round2Decs(pMPU9250->myIMU.gz);          break;
+        case (xMag):          output = round2Decs(pMPU9250->myIMU.mx);          break;
+        case (yMag):          output = round2Decs(pMPU9250->myIMU.my);          break;
+        case (zMag):          output = round2Decs(pMPU9250->myIMU.mz);          break;       
+        case (temperature):   output = round2Decs(pMPU9250->myIMU.temperature); break;
+        default:              output = 0.0;                                     break;
+
+      }
+/*      
+      if (val_type == yaw) { 
+          output = round2Decs(pMPU9250->myIMU.yaw);
+      }
+      else if (val_type == pitch) {
+          output = round2Decs(pMPU9250->myIMU.pitch);
+      }
+      else if (val_type == roll) {
+          output = round2Decs(pMPU9250->myIMU.roll);
+      }
+      else if (val_type == xAcc) {
+          output = round2Decs(pMPU9250->myIMU.ax);
+      }
+      else if (val_type == yAcc) {
+          output = round2Decs(pMPU9250->myIMU.ay);        
+      }
+      else if (val_type == zAcc) {
+          output = round2Decs(pMPU9250->myIMU.az);
+      }
+      else if (val_type == xGyro) {
+          output = round2Decs(pMPU9250->myIMU.gx);
+      }
+      else if (val_type == yGyro) {
+          output = round2Decs(pMPU9250->myIMU.gy);
+      }
+      else if (val_type == zGyro) {
+          output = round2Decs(pMPU9250->myIMU.gz);
+      }
+      else if (val_type == xMag) {
+          output = round2Decs(pMPU9250->myIMU.mx);
+      }
+      else if (val_type == yMag) {
+          output = round2Decs(pMPU9250->myIMU.my);
+      }
+      else if (val_type == zMag) {
+          output = round2Decs(pMPU9250->myIMU.mz);        
+      }
+      else if (val_type == temperature) {
+          output = round2Decs(pMPU9250->myIMU.temperature);        
+      }
+      else output = 0.0;
+*/
+      notify();    //
+  });
+}
+
+float mpu9250value::round2Decs(float input) 
+{
+    float tmpFloat;
+    tmpFloat = input * 100;
+    tmpFloat = int(tmpFloat);
+    tmpFloat = tmpFloat / 100;
+    return tmpFloat;
+}
+
+JsonObject& mpu9250value::get_configuration(JsonBuffer& buf) {
+  JsonObject& root = buf.createObject();
+  root["read_delay"] = read_delay;
+  root["value"] = output;
+  return root;
+  };
+
+  static const char SCHEMA[] PROGMEM = R"###({
+    "type": "object",
+    "properties": {
+        "read_delay": { "title": "Read delay", "type": "number", "description": "The time, in milliseconds, between each read of the input" },
+        "value": { "title": "Last value", "type" : "number", "readOnly": true }
+    }
+  })###";
+
+
+  String mpu9250value::get_config_schema() {
+  return FPSTR(SCHEMA);
+}
+
+bool mpu9250value::set_configuration(const JsonObject& config) {
+  String expected[] = {"read_delay"};
+  for (auto str : expected) {
+    if (!config.containsKey(str)) {
+      return false;
+    }
+  }
+  read_delay = config["read_delay"];
+  return true;
+}
